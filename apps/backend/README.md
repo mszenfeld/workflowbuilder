@@ -320,6 +320,11 @@ All scripts run from the monorepo root. Grouped by purpose:
 | `db:generate` | Generate a new migration from schema changes |
 | `db:migrate`  | Apply pending migrations to the database     |
 
+The backend applies pending migrations at boot; `pnpm --filter @workflow-builder/backend run db:migrate`
+applies them separately. Migration `0003_normalize_execution_event_payloads` converts historical
+`execution_events.payload_json` object/array strings into native jsonb objects/arrays so SQL JSON
+operators work on those rows too. It leaves existing objects, arrays, scalar payloads and nulls unchanged.
+
 ### Builds
 
 | Script            | What it does                                       |

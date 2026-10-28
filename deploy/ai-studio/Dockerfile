@@ -1,18 +1,20 @@
-# Targets: runtime (backend + worker, command chosen per compose service),
-# web (nginx, SPA + /api proxy). Build context must be the repo root —
-# workspace packages are linked via pnpm `workspace:*`.
+# Targets: api (backend), worker (execution worker), web (nginx, SPA + /api proxy).
+# Build context must be the repo root: workspace packages are linked via pnpm
+# `workspace:*`.
 #
 # No `# syntax=` line on purpose: it would pull the build frontend from Docker Hub
-# as an unpinned fourth download. Needs Docker Engine 23+ (built-in BuildKit frontend).
+# as an unpinned download. Needs Docker Engine 23+ (built-in BuildKit frontend).
 #
-# Exact Node pin: engineStrict rejects any other version. pnpm via npm, not
-# corepack — this Node's corepack cannot load pnpm 10
-# (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING). Keep in sync with `packageManager`.
-#
-# This step and `pnpm fetch` are the two that need the registry. Both mount an optional
-# `npmrc` secret, so a build can use a registry mirror without baking its token into a
-# layer (README "Air-gapped / offline install").
-FROM node:22.12.0-bookworm-slim AS base
+# Only base image pulls, the Debian and pnpm installs and `pnpm fetch` reach the network;
+# every RUN after the fetch is --network=none (tools/check-offline-build.mjs). Mirrors:
+# the optional `npmrc` and `debian-sources` secrets (README "Air-gapped / offline install").
+
+# Exact Node pin: engineStrict rejects any other version. Same value as `engines.node`.
+FROM node:22.23.4-trixie-slim AS node-base
+
+# pnpm via npm, not corepack: Node 25 and later no longer bundle corepack.
+# Keep in sync with `packageManager`.
+FROM node-base AS base
 ENV PNPM_HOME=/pnpm \
     PATH="/pnpm:$PATH" \
     # husky needs the .git dir that the build context excludes
@@ -24,55 +26,84 @@ RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm install -g pnpm@10.17.0 --prefer-offline
 WORKDIR /app
 
-# `useNodeVersion` would make pnpm download Node from nodejs.org for lifecycle scripts:
-# fatal with no network, redundant on this base image (engineStrict still pins it).
-# Stripped in the image only, twice because `COPY . .` restores the file.
+# Base of the api and worker images: Debian security fixes at build time, tini as PID 1
+# to pass SIGTERM on to Node, and no package managers at runtime. --error-on=any fails the
+# build when any repository fails to update, instead of upgrading without it.
+FROM node-base AS runtime-base
+ARG DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=secret,id=debian-sources,target=/etc/apt/sources.list.d/debian.sources \
+    apt-get update --error-on=any \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends tini \
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+    && rm -rf /var/lib/apt/lists/* \
+       /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+       /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+       /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
+# tsx otherwise creates a cache dir under /tmp at start-up, which a read-only root filesystem refuses.
+ENV NODE_ENV=production \
+    TSX_DISABLE_CACHE=1
+# Each app's tsconfig.json extends ../../tsconfig.base.json, and tsx reads it at start-up.
+COPY tsconfig.base.json /app/
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
 FROM base AS source
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+# `useNodeVersion` would make pnpm download Node for lifecycle scripts, fatal with no network.
+# Stripped in the image only, twice because `COPY . .` restores the file.
 RUN --network=none sed -i '/^useNodeVersion:/d' pnpm-workspace.yaml
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    --mount=type=secret,id=npmrc,target=/root/.npmrc \
+# The store stays in this layer, not in a cache mount: the api and worker installs below
+# start from an empty node_modules and read every package from it offline.
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
     pnpm fetch
 COPY . .
 RUN --network=none sed -i '/^useNodeVersion:/d' pnpm-workspace.yaml
 
-# @workflowbuilder/temporal is the one workspace dependency of backend/worker that
-# ships built output: its `exports` point at ./dist, and .dockerignore keeps dist out
-# of the build context. It cannot build itself during the runtime install either,
-# because tsup is a devDependency and that install is --prod. So it is built here,
-# with dev dependencies present, and only the result is carried over.
+# @workflowbuilder/temporal resolves to ./dist, which .dockerignore keeps out of the
+# context; building it needs devDependencies (tsup), so only the result is carried over.
 FROM source AS package-build
-RUN --network=none --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --offline --filter @workflowbuilder/temporal...
+RUN --network=none pnpm install --frozen-lockfile --offline --filter @workflowbuilder/temporal...
 RUN --network=none pnpm build:temporal
 
-# tsx runs TS directly — required anyway for the worker, whose workflow
-# sandbox bundles from TS source on disk at runtime.
-#
-# Every RUN after `pnpm fetch` is --network=none: `--offline` stops only pnpm's
-# resolver, not lifecycle scripts or builds. tools/check-offline-build.mjs
-# enforces it from `pnpm check`.
-#
-# Inherits the whole-lockfile virtual store that `pnpm fetch` materialised (~1.5 GB,
-# docs and release toolchains included). A clean stage fed by `pnpm deploy --prod`
-# would ship only backend + worker (follow-up: slim-runtime-image).
-FROM source AS runtime
-COPY --from=package-build /app/packages/temporal/dist ./packages/temporal/dist
-RUN --network=none --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    # `prepare` runs husky at the root, and `tsup` in packages/temporal — neither is
-    # available in a --prod install, and the dist copied above is what it would produce
-    npm pkg delete scripts.prepare && \
-    (cd packages/temporal && npm pkg delete scripts.prepare) && \
-    pnpm install --frozen-lockfile --offline --prod \
-    --filter backend... --filter execution-worker...
+# One production install per image, from an empty node_modules, so each ships only its own
+# app's dependency closure. --ignore-scripts skips the workspace `prepare` scripts (husky, tsup).
+FROM source AS api-deps
+RUN --network=none rm -rf node_modules \
+    && pnpm install --frozen-lockfile --offline --prod --ignore-scripts --filter @workflow-builder/backend...
+
+FROM source AS worker-deps
+RUN --network=none rm -rf node_modules \
+    && pnpm install --frozen-lockfile --offline --prod --ignore-scripts --filter @workflow-builder/execution-worker...
 
 # VITE_BACKEND_URL is baked at build time; empty = same-origin /api,
 # proxied by the web target's nginx.
 FROM source AS frontend-build
 ARG VITE_BACKEND_URL=
-RUN --network=none --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --offline --filter @workflow-builder/ai-studio...
+RUN --network=none pnpm install --frozen-lockfile --offline --filter @workflow-builder/ai-studio...
 RUN --network=none VITE_BACKEND_URL=$VITE_BACKEND_URL pnpm build:ai-studio
+
+# The apps run their TS sources through tsx; the worker's workflow bundler also reads them at start-up.
+FROM runtime-base AS api
+COPY --from=api-deps /app/node_modules /app/node_modules
+COPY --from=api-deps /app/packages /app/packages
+COPY --from=package-build /app/packages/temporal/dist /app/packages/temporal/dist
+COPY --from=api-deps /app/apps/backend /app/apps/backend
+WORKDIR /app/apps/backend
+ENV HOST=0.0.0.0 \
+    PORT=3001
+EXPOSE 3001
+# Numeric (the base image's `node` user), so Kubernetes runAsNonRoot can verify it.
+USER 1000:1000
+CMD ["node", "--import", "tsx", "src/server.ts"]
+
+FROM runtime-base AS worker
+COPY --from=worker-deps /app/node_modules /app/node_modules
+COPY --from=worker-deps /app/packages /app/packages
+COPY --from=package-build /app/packages/temporal/dist /app/packages/temporal/dist
+COPY --from=worker-deps /app/apps/execution-worker /app/apps/execution-worker
+WORKDIR /app/apps/execution-worker
+USER 1000:1000
+CMD ["node", "--import", "tsx", "src/engines/temporal/worker.ts"]
 
 FROM nginx:1.31-alpine AS web
 COPY deploy/ai-studio/nginx/default.conf /etc/nginx/conf.d/default.conf

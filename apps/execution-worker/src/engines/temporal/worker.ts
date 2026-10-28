@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { aiConfig, retiredAiVariables } from '@workflow-builder/ai-config';
 import { temporalConfig } from '@workflow-builder/temporal-connection';
 
-import { database } from '../../database';
+import { closeDatabase, database } from '../../database';
 import type { AiStudioNode } from '../../domain/ai-studio-nodes';
 import { env } from '../../env';
 import { createAiAgentExecutor } from '../../executors/ai-agent';
@@ -53,13 +53,17 @@ const plugin = new WorkflowBuilderPlugin<AiStudioNode>({
 const temporal = temporalConfig();
 const connection = await NativeConnection.connect(temporal.connection);
 
-const worker = await Worker.create({
-  connection,
-  namespace: temporal.namespace,
-  taskQueue: plugin.taskQueue,
-  workflowsPath: fileURLToPath(new URL('workflows.ts', import.meta.url)),
-  plugins: [plugin],
-});
+try {
+  const worker = await Worker.create({
+    connection,
+    namespace: temporal.namespace,
+    taskQueue: plugin.taskQueue,
+    workflowsPath: fileURLToPath(new URL('workflows.ts', import.meta.url)),
+    plugins: [plugin],
+  });
 
-logger.info('execution worker started', { taskQueue: plugin.taskQueue, namespace: temporal.namespace });
-await worker.run();
+  logger.info('execution worker started', { taskQueue: plugin.taskQueue, namespace: temporal.namespace });
+  await worker.run();
+} finally {
+  await Promise.all([closeDatabase(), connection.close()]);
+}

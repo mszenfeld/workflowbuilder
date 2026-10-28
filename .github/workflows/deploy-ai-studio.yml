@@ -44,18 +44,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push runtime image
+      - name: Build and push api image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/ai-studio/Dockerfile
-          target: runtime
+          target: api
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.APP }}:${{ steps.tag.outputs.value }}-runtime
-            ${{ env.REGISTRY }}/${{ env.APP }}:latest-runtime
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.APP }}:latest-runtime
+            ${{ env.REGISTRY }}/${{ env.APP }}:${{ steps.tag.outputs.value }}-api
+            ${{ env.REGISTRY }}/${{ env.APP }}:latest-api
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.APP }}:latest-api
           cache-to: type=inline
+          no-cache-filters: runtime-base
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/ai-studio/Dockerfile
+          target: worker
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.APP }}:${{ steps.tag.outputs.value }}-worker
+            ${{ env.REGISTRY }}/${{ env.APP }}:latest-worker
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.APP }}:latest-worker
+          cache-to: type=inline
+          no-cache-filters: runtime-base
 
       - name: Build and push web image
         uses: docker/build-push-action@v6
@@ -118,7 +133,7 @@ jobs:
                 RATE_LIMIT_EXECUTE_PER_MINUTE RATE_LIMIT_EXECUTE_PER_DAY \
                 APP_DB_PASSWORD TEMPORAL_DB_PASSWORD; do
               printf "%s='%s'\n" "$k" "${!k}"
-            done | cat - <(printf "RUNTIME_IMAGE='%s'\nWEB_IMAGE='%s'\n" "$IMAGE-runtime" "$IMAGE-web") | base64 -w0)
+            done | cat - <(printf "API_IMAGE='%s'\nWORKER_IMAGE='%s'\nWEB_IMAGE='%s'\n" "$IMAGE-api" "$IMAGE-worker" "$IMAGE-web") | base64 -w0)
           COMPOSE_B64=$(base64 -w0 deploy/ai-studio/docker-compose.yml)
           OVERRIDE_B64=$(base64 -w0 deploy/ai-studio/docker-compose.override.yml)
           SCRIPT=$(cat <<EOF

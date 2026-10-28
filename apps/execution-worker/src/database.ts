@@ -10,7 +10,13 @@ import {
 
 import { env } from './env';
 
+const JSONB_OID = 3802;
+
 const sql = postgres(env.DATABASE_URL);
+
+export function closeDatabase(): Promise<void> {
+  return sql.end();
+}
 
 // Widened alias: `.includes` on the terminal-only tuple rejects the full status union.
 const TERMINAL_STATUSES: readonly ExecutionStatus[] = TERMINAL_EXECUTION_STATUSES;
@@ -38,7 +44,7 @@ export const database = {
         ${type},
         ${nodeId ?? null},
         ${null},
-        ${payload ? JSON.stringify(payload) : null}::jsonb,
+        ${sql.typed(payload ?? null, JSONB_OID)}::jsonb,
         (SELECT tenant_id FROM executions WHERE id = ${executionId}),
         now()
       )
