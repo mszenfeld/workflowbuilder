@@ -8,8 +8,8 @@ any Docker host — an Azure VM, AWS, on-prem — with no cloud-specific glue.
 | Service       | Image                          | Role                                                                   | Exposed                  |
 | ------------- | ------------------------------ | ---------------------------------------------------------------------- | ------------------------ |
 | `web`         | `ai-studio-web` (nginx)        | Serves the SPA, proxies `/api` to the backend                          | `${WEB_PORT}` (only one) |
-| `backend`     | `ai-studio-runtime`            | Hono REST + SSE event stream; calls the LLM for `/api/visualize/adapt` | internal                 |
-| `worker`      | `ai-studio-runtime`            | Temporal worker, runs the nodes; AI Agent nodes call the LLM           | internal                 |
+| `backend`     | `ai-studio-api`                | Hono REST + SSE event stream; calls the LLM for `/api/visualize/adapt` | internal                 |
+| `worker`      | `ai-studio-worker`             | Temporal worker, runs the nodes; AI Agent nodes call the LLM           | internal                 |
 | `temporal`    | `temporalio/auto-setup` pinned | Workflow engine                                                        | internal                 |
 | `app-db`      | `postgres:16.15`               | Workflow snapshots + execution events                                  | internal                 |
 | `temporal-db` | `postgres:16.15`               | Temporal's own state store                                             | internal                 |
@@ -21,9 +21,15 @@ applies on top of [`docker-compose.yml`](docker-compose.yml) by default. The bas
 file alone has no cluster: the apps connect to whatever `TEMPORAL_ADDRESS` names
 and depend only on `app-db` — see "Pointing at a different Temporal".
 
-Both images build from one Dockerfile (`deploy/ai-studio/Dockerfile`) with the
-repo root as context. Backend and worker share a single image and differ only
-in the compose `command`. Database migrations are applied by the backend at
+Three images build from one Dockerfile (`deploy/ai-studio/Dockerfile`) with the
+repo root as context: `api` (backend), `worker` (execution worker), and `web`
+(nginx). The api and worker images each carry only their own app's production
+dependencies and start their app by default. Both run as UID/GID `1000:1000`
+under tini with `NODE_ENV=production`. Messages from the backend's and worker's
+own logger are one JSON object per line; the AllowAllAuthPort warning banner
+and the Temporal SDK's own log lines stay plain text.
+
+Database migrations are applied by the backend at
 boot (drizzle-orm's programmatic migrator) — there is no separate migration
 service or step.
 
@@ -48,22 +54,23 @@ curl -s http://localhost:8080/api/health   # {"status":"ok"}
 
 ## Air-gapped / offline install
 
-The host that runs the stack needs no internet access — but the machine that
-builds the images does. The Dockerfile reaches the network in exactly three
-places: pulling base images, installing pnpm itself, and `pnpm fetch` of the
-package store. Every `RUN` after that fetch is `--network=none`, so BuildKit
-cuts egress for the whole step — installs, lifecycle scripts and build
-commands included (`--offline` alone would only stop pnpm's own resolver). A
+The host that runs the stack needs no internet access, but the machine that
+builds the images does. The Dockerfile reaches the network in exactly four
+places: pulling base images, installing Debian packages for the api/worker
+base, installing pnpm itself, and `pnpm fetch` of the package store. Every
+`RUN` after that fetch is `--network=none`, so BuildKit cuts egress for the
+whole step, including installs, lifecycle scripts and build commands
+(`--offline` alone would only stop pnpm's own resolver). A
 step that needs the network fails every ordinary build, and
 `pnpm check:offline-build` fails if a post-fetch step ever loses the flag or
 adds a download of its own (`ADD <url>`, `COPY --from=<image>`,
 `RUN --mount=…,from=<image>`), and when the `pnpm fetch` step runs anything
 else.
 That per-step guarantee is the enforceable one: a whole-build
-`docker build --network none` cannot pass, because the pnpm bootstrap and
-`pnpm fetch` need the registry by design. The Dockerfile also carries no
-`# syntax=` directive, which would pull the build frontend from Docker Hub as
-an unpinned fourth download; the guard rejects one, and the packing machine
+`docker build --network none` cannot pass, because the Debian install, pnpm
+bootstrap and `pnpm fetch` need the network by design. The Dockerfile also
+carries no `# syntax=` directive, which would pull the build frontend from
+Docker Hub as an unpinned download; the guard rejects one, and the packing machine
 needs Docker Engine 23 or later for the built-in frontend instead. So by
 default, build on a connected machine and ship the images.
 
@@ -79,7 +86,7 @@ rest means the images must be built for the destination platform; see the
 platform note under step 1.
 
 The air-gapped host needs exactly one thing preinstalled: Docker Engine with
-the Compose v2 plugin (plus ~4 GB of disk for the loaded images). Compose v1
+the Compose v2 plugin (plus ~2.4 GB of disk for the loaded images). Compose v1
 is end-of-life and these files are not tested with it.
 
 ### 1. Build and pack on a connected machine
@@ -89,11 +96,13 @@ cd deploy/ai-studio
 ./pack-offline.sh ~/ai-studio-offline   # any directory outside the checkout
 ```
 
-The script builds both images, pulls the infra images and writes one directory
-to ship. It refuses a directory inside the checkout: the repo root is the image
-build context, so a bundle left there would be copied into the next build.
+The script builds the three images without the build cache, so the api and
+worker images carry the Debian packages current at pack time. This takes longer
+than a cached build. It pulls the infra images and writes one directory to ship.
+It refuses a directory inside the checkout: the repo root is the image build
+context, so a bundle left there would be copied into the next build.
 
-- `ai-studio-images.tar` (~1 GB): `ai-studio-runtime`, `ai-studio-web`,
+- `ai-studio-images.tar` (~2.1 GB): `ai-studio-api`, `ai-studio-worker`, `ai-studio-web`,
   Postgres, Temporal and the Temporal UI (drop `--profile debug` from the
   script to leave the UI out and save ~100 MB)
 - `ai-studio-images.tar.sha256`: checksum to verify on the host
@@ -167,10 +176,17 @@ registry=https://npm.example.internal/
 //npm.example.internal/:_authToken=<token>
 ```
 
+The Debian step also needs a mirror inside the network. Pass a deb822 file
+with `--secret id=debian-sources,src=/path/to/mirror.sources`; it replaces
+`/etc/apt/sources.list.d/debian.sources` for that one step and must carry the
+`trixie`, `trixie-updates` and `trixie-security` suites. Without that secret,
+the step uses the base image's own Debian sources.
+
 ```bash
 # from the repo root: it is the build context
-for target in runtime web; do
+for target in api worker web; do
   docker build --secret id=npmrc,src=/path/to/mirror.npmrc \
+    --secret id=debian-sources,src=/path/to/mirror.sources \
     -f deploy/ai-studio/Dockerfile --target "$target" -t "ai-studio-$target" .
 done
 cd deploy/ai-studio && docker compose up -d --no-build
@@ -194,6 +210,16 @@ receives OS security patches, so two packs made months apart can differ in
 those layers. The manifest the script writes records the digests that actually
 shipped, so a bundle is always traceable to its exact contents. Bump a tag in
 the file that holds it; the Postgres tag appears in both compose files.
+
+The api and worker images run `apt-get upgrade` in their `runtime-base` build
+stage. Docker caches that layer, so an ordinary rebuild keeps the Debian
+packages of the build that created it. The deploy workflow and
+`pack-offline.sh` rebuild it every time. For a deploy by hand with current
+Debian fixes, run:
+
+```bash
+docker compose build --pull --no-cache && docker compose up -d
+```
 
 ### What still needs egress
 
@@ -345,6 +371,20 @@ operator deploying by hand can check a stale `.env` for the old name:
 grep -E '^OPENROUTER_API_KEY=.+' .env    # a hit means .env still needs the rename
 ```
 
+**Prebuilt images.** Compose no longer reads `RUNTIME_IMAGE`. A `.env` that
+sets it must set `API_IMAGE` and `WORKER_IMAGE` instead, pointing at the `-api`
+and `-worker` tags of the same build, and keep `WEB_IMAGE`. With only
+`RUNTIME_IMAGE`, `docker compose up -d --no-build` fails because it looks for
+`ai-studio-api` and `ai-studio-worker` images that were never built or pushed.
+Check a hand-kept `.env` with:
+
+```bash
+grep -E '^RUNTIME_IMAGE=.+' .env
+```
+
+The deploy workflow writes the VM's `.env` in full, so the public demo needs
+nothing.
+
 **Pointing at a different Temporal.** Every `TEMPORAL_*` variable reaches the
 backend and the worker from one shared block in the compose file, so the two
 cannot disagree. `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TLS` and
@@ -356,13 +396,27 @@ apps, and `backend` / `worker` depend only on `app-db`. Run
 `TEMPORAL_*` combination stops both apps at boot with an explanatory error
 (`docker compose logs backend worker`). The bundled debug
 UI (`--profile debug`) is part of the override and only ever shows the bundled
-cluster — an external cluster has its own UI. For a private CA or mTLS, drop the PEM files into [`tls/`](tls/) (git-ignored, mounted
-read-only into both containers at `/etc/workflowbuilder/tls`) and set
-`TEMPORAL_TLS_CA_PATH` / `_CERT_PATH` / `_KEY_PATH` to those container paths —
-see [.env.example](.env.example) for the exact lines. `TEMPORAL_TLS_DIR` may
-point at `./tls` or at a directory outside the checkout, nothing else: the
-whole repository is the image build context, so a key placed in any other
-in-repo directory is copied into the runtime image by a local build.
+cluster; an external cluster has its own UI. For a private CA or mTLS, drop
+the PEM files into [`tls/`](tls/) (git-ignored, mounted read-only into both
+containers at `/etc/workflowbuilder/tls`) and set `TEMPORAL_TLS_CA_PATH` /
+`_CERT_PATH` / `_KEY_PATH` to those container paths. See [.env.example](.env.example)
+for the exact lines. Both containers run as UID/GID `1000:1000`, so the PEM
+files must be readable by that UID or GID. From `deploy/ai-studio/` on the
+host, use either:
+
+```bash
+sudo chown 1000:1000 tls/client-key.pem && sudo chmod 0400 tls/client-key.pem
+# Or keep the current owner and grant the group access:
+sudo chgrp 1000 tls/*.pem && sudo chmod 0440 tls/*.pem
+```
+
+Use the matching host paths if `TEMPORAL_TLS_DIR` points elsewhere. The other
+referenced PEM files must be readable by UID or GID 1000 too. Never
+`chmod 644` the private key: every local account could read it.
+
+`TEMPORAL_TLS_DIR` may point at `./tls` or at a directory outside the checkout,
+nothing else: the whole repository is the image build context, so a key
+placed in any other in-repo directory enters the build and can ship in an image.
 
 ## Operations
 
@@ -375,10 +429,10 @@ docker exec ai-studio-app-db-1 pg_dump -U wb workflow_builder > backup.sql
 ```
 
 The public demo is deployed by the `Deploy AI Studio` GitHub Actions workflow:
-it builds and pushes both images to the registry, copies `docker-compose.yml`
+it builds and pushes three images to the registry, copies `docker-compose.yml`
 and `docker-compose.override.yml` from the repo to the VM, writes the VM's
 `.env` in full from the repository secrets and variables (with the tags it just
-pushed as `RUNTIME_IMAGE` / `WEB_IMAGE`), and runs compose there. Because the
+pushed as `API_IMAGE` / `WORKER_IMAGE` / `WEB_IMAGE`), and runs compose there. Because the
 tags live in `.env`, every later compose command on the VM
 (`docker compose up -d worker`, `--profile debug`) resolves the deployed
 images, not the local `ai-studio-*` build names. The VM's compose files and

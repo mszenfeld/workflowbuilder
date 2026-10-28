@@ -41,7 +41,7 @@ done
 compose() { docker compose --env-file /dev/null "$@"; }
 [ -f .env ] && echo "pack-offline: ignoring ./.env — the bundle is built from .env.example defaults" >&2
 
-compose build --pull
+compose build --pull --no-cache
 compose --profile debug pull --ignore-buildable
 
 images=()

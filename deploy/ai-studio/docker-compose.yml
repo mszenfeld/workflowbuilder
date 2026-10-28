@@ -7,16 +7,11 @@
 # docker-compose.override.yml, which compose applies on top of this file by
 # default; COMPOSE_FILE=docker-compose.yml in .env leaves it out.
 #
-# RUNTIME_IMAGE / WEB_IMAGE name prebuilt images from a registry; unset, the
+# API_IMAGE / WORKER_IMAGE / WEB_IMAGE name prebuilt images from a registry; unset, the
 # services build locally under the default names. The deploy workflow writes the
 # tags it just pushed into the VM's .env, so this file is the one the demo VM runs too.
 
 name: ai-studio
-
-x-runtime-build: &runtime-build
-  context: ../..
-  dockerfile: deploy/ai-studio/Dockerfile
-  target: runtime
 
 # Shared by backend and worker via YAML merge, so the two can never drift apart:
 # the namespace must match or the worker polls a queue nobody submits to.
@@ -60,9 +55,11 @@ services:
 
   # applies migrations at boot; on failure exits and `restart` retries
   backend:
-    image: ${RUNTIME_IMAGE:-ai-studio-runtime}
-    build: *runtime-build
-    command: ['pnpm', '--filter', 'backend', 'start:prod']
+    image: ${API_IMAGE:-ai-studio-api}
+    build:
+      context: ../..
+      dockerfile: deploy/ai-studio/Dockerfile
+      target: api
     environment:
       <<: *temporal-env
       HOST: 0.0.0.0
@@ -106,9 +103,11 @@ services:
 
   # crash-loops until Temporal answers (no usable healthcheck); restart converges it
   worker:
-    image: ${RUNTIME_IMAGE:-ai-studio-runtime}
-    build: *runtime-build
-    command: ['pnpm', '--filter', 'execution-worker', 'start:prod']
+    image: ${WORKER_IMAGE:-ai-studio-worker}
+    build:
+      context: ../..
+      dockerfile: deploy/ai-studio/Dockerfile
+      target: worker
     environment:
       <<: *temporal-env
       DATABASE_URL: postgresql://wb:${APP_DB_PASSWORD:-wb}@app-db:5432/workflow_builder
