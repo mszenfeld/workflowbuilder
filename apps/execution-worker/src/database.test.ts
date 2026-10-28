@@ -16,6 +16,7 @@ const { queries, fakeSql } = vi.hoisted(() => {
     queries.push({ strings: first, values });
     return Promise.resolve([]);
   }
+  fakeSql.typed = (value: unknown, type: number): { value: unknown; type: number } => ({ value, type });
   return { queries, fakeSql };
 });
 
@@ -29,6 +30,25 @@ async function statusesKeptAgainst(status: ExecutionStatus): Promise<unknown> {
   const guard = query.strings.findIndex((part) => part.trimEnd().endsWith('status NOT IN'));
   return (query.values[guard] as { list: unknown }).list;
 }
+
+describe('emitExecutionEvent', () => {
+  it('passes payload objects to postgres-js as jsonb without pre-stringifying them', async () => {
+    queries.length = 0;
+    const payload = { output: { text: 'hi' } };
+
+    await database.emitExecutionEvent('execution-1', 1, 'node_completed', payload, 'node-1');
+
+    expect(queries[0]?.values).toContainEqual({ value: payload, type: 3802 });
+  });
+
+  it('writes SQL NULL for an event without a payload', async () => {
+    queries.length = 0;
+
+    await database.emitExecutionEvent('execution-1', 2, 'execution_started');
+
+    expect(queries[0]?.values).toContainEqual({ value: null, type: 3802 });
+  });
+});
 
 describe('updateExecutionStatus', () => {
   it.each<ExecutionStatus>(['waiting', 'running', 'pending', 'cancelling'])(
