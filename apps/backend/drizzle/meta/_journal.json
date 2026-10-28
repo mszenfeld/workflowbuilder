@@ -22,6 +22,13 @@
       "when": 1789998034189,
       "tag": "0002_crazy_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793191742193,
+      "tag": "0003_normalize_execution_event_payloads",
+      "breakpoints": true
     }
   ]
 }
