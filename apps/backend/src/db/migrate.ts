@@ -9,6 +9,7 @@ import { env } from '../env';
 // migrator — single replica assumed.
 export async function runMigrations(): Promise<void> {
   const migrationsFolder = fileURLToPath(new URL('../../drizzle', import.meta.url));
+  // IF NOT EXISTS emits "already exists, skipping" notices that postgres-js prints between JSON log lines.
   const sql = postgres(env.DATABASE_URL, { max: 1, onnotice: () => {} });
   try {
     await migrate(drizzle(sql), { migrationsFolder });
