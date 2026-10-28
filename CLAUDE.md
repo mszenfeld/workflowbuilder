@@ -53,7 +53,7 @@ Grep for the message text only, not for a rendered sentence: the backend and wor
 ```
 tools/              - Root dev scripts: preflight, setup:env, infra wait
 deploy/
-  ai-studio/        - Production deployment: Dockerfile (runtime/web), compose, nginx, README
+  ai-studio/        - Production deployment: Dockerfile (api/worker/web), compose, nginx, README
 apps/
   demo/             - Reference app consuming the SDK (React + Vite, port 4200)
   ai-studio/        - Reference AI workflow product (React + Vite, port 4201)
