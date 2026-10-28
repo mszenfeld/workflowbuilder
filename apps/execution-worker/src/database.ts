@@ -12,6 +12,10 @@ import { env } from './env';
 
 const sql = postgres(env.DATABASE_URL);
 
+export function closeDatabase(): Promise<void> {
+  return sql.end();
+}
+
 // Widened alias: `.includes` on the terminal-only tuple rejects the full status union.
 const TERMINAL_STATUSES: readonly ExecutionStatus[] = TERMINAL_EXECUTION_STATUSES;
 
