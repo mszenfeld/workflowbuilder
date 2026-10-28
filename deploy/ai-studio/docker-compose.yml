@@ -60,6 +60,10 @@ services:
       context: ../..
       dockerfile: deploy/ai-studio/Dockerfile
       target: api
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       <<: *temporal-env
       HOST: 0.0.0.0
@@ -108,6 +112,10 @@ services:
       context: ../..
       dockerfile: deploy/ai-studio/Dockerfile
       target: worker
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       <<: *temporal-env
       DATABASE_URL: postgresql://wb:${APP_DB_PASSWORD:-wb}@app-db:5432/workflow_builder

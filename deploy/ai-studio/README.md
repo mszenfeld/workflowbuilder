@@ -29,6 +29,10 @@ under tini with `NODE_ENV=production`. Messages from the backend's and worker's
 own logger are one JSON object per line; the AllowAllAuthPort warning banner
 and the Temporal SDK's own log lines stay plain text.
 
+The api and worker images strip setuid/setgid bits from the runtime base.
+Compose also drops all Linux capabilities and sets `no-new-privileges` for both
+services, so executing a privileged binary cannot grant additional privileges.
+
 Database migrations are applied by the backend at
 boot (drizzle-orm's programmatic migrator) — there is no separate migration
 service or step.

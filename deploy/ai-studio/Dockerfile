@@ -35,6 +35,7 @@ RUN --mount=type=secret,id=debian-sources,target=/etc/apt/sources.list.d/debian.
     apt-get update --error-on=any \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends tini \
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
     && rm -rf /var/lib/apt/lists/* \
        /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
