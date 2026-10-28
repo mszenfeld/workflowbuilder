@@ -200,7 +200,7 @@ The [package README](./packages/temporal/README.md) has the full worker and clie
 
 Paths B and C run this repository locally and share these requirements and the preflight check below. Paths A and D need neither.
 
-- pnpm `10.17.0`: `npm i -g pnpm@10.17.0`. It fetches Node `22.12.0` on its own (`useNodeVersion` in `pnpm-workspace.yaml`), so no Node version manager is needed. Both versions are pinned in `package.json`. Do not use corepack: the one bundled with Node 22 cannot load pnpm 10 (`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`).
+- pnpm `10.17.0`: `npm i -g pnpm@10.17.0`. It fetches Node `22.23.4` on its own (`useNodeVersion` in `pnpm-workspace.yaml`), so no Node version manager is needed. Both versions are pinned in `package.json`. Do not use corepack: Node 25 and later no longer bundle it, and the one bundled with Node 22.12.0 cannot load pnpm 10 (`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`).
 - Docker Desktop. Only required for Path C.
 
 Works the same on macOS, Linux, and Windows. No platform-specific steps.

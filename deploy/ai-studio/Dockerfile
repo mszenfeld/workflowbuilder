@@ -5,14 +5,14 @@
 # No `# syntax=` line on purpose: it would pull the build frontend from Docker Hub
 # as an unpinned fourth download. Needs Docker Engine 23+ (built-in BuildKit frontend).
 #
-# Exact Node pin: engineStrict rejects any other version. pnpm via npm, not
-# corepack — this Node's corepack cannot load pnpm 10
-# (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING). Keep in sync with `packageManager`.
+# Exact Node pin: engineStrict rejects any other version.
+# pnpm via npm, not corepack: Node 25 and later no longer bundle corepack.
+# Keep in sync with `packageManager`.
 #
 # This step and `pnpm fetch` are the two that need the registry. Both mount an optional
 # `npmrc` secret, so a build can use a registry mirror without baking its token into a
 # layer (README "Air-gapped / offline install").
-FROM node:22.12.0-bookworm-slim AS base
+FROM node:22.23.4-trixie-slim AS base
 ENV PNPM_HOME=/pnpm \
     PATH="/pnpm:$PATH" \
     # husky needs the .git dir that the build context excludes
