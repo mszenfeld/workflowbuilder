@@ -10,6 +10,8 @@ import {
 
 import { env } from './env';
 
+const JSONB_OID = 3802;
+
 const sql = postgres(env.DATABASE_URL);
 
 export function closeDatabase(): Promise<void> {
@@ -42,7 +44,7 @@ export const database = {
         ${type},
         ${nodeId ?? null},
         ${null},
-        ${payload ? JSON.stringify(payload) : null}::jsonb,
+        ${sql.typed(payload ?? null, JSONB_OID)}::jsonb,
         (SELECT tenant_id FROM executions WHERE id = ${executionId}),
         now()
       )
