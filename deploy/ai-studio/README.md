@@ -389,9 +389,15 @@ grep -E '^RUNTIME_IMAGE=.+' .env
 The deploy workflow writes the VM's `.env` in full, so the public demo needs
 nothing.
 
-**Pointing at a different Temporal.** Every `TEMPORAL_*` variable reaches the
-backend and the worker from one shared block in the compose file, so the two
-cannot disagree. `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TLS` and
+Before upgrading an mTLS deployment, make every referenced PEM file readable
+by the backend and worker, which now run as UID/GID `1000:1000`, following the
+[dedicated host group and `TEMPORAL_TLS_GID` guidance](#temporal-tls-permissions).
+
+<a id="temporal-tls-permissions"></a>
+
+**Pointing at a different Temporal.** The Temporal connection variables reach
+the backend and the worker from one shared environment block in the compose
+file, so the two cannot disagree. `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TLS` and
 `TEMPORAL_API_KEY` are all an operated cluster or Temporal Cloud needs. Add
 `COMPOSE_FILE=docker-compose.yml` to `.env` at the same time: it leaves the
 override file out, so the bundled cluster is not started and cannot block the
@@ -404,19 +410,30 @@ cluster; an external cluster has its own UI. For a private CA or mTLS, drop
 the PEM files into [`tls/`](tls/) (git-ignored, mounted read-only into both
 containers at `/etc/workflowbuilder/tls`) and set `TEMPORAL_TLS_CA_PATH` /
 `_CERT_PATH` / `_KEY_PATH` to those container paths. See [.env.example](.env.example)
-for the exact lines. Both containers run as UID/GID `1000:1000`, so the PEM
-files must be readable by that UID or GID. From `deploy/ai-studio/` on the
-host, use either:
+for the exact lines. Both containers run as UID/GID `1000:1000`. On a Linux
+host, those IDs may belong to a human account; do not give that account the
+private key. Use a dedicated host group with no human members. From
+`deploy/ai-studio/` on the host:
 
 ```bash
-sudo chown 1000:1000 tls/client-key.pem && sudo chmod 0400 tls/client-key.pem
-# Or keep the current owner and grant the group access:
-sudo chgrp 1000 tls/*.pem && sudo chmod 0440 tls/*.pem
+getent passwd 1000; getent group 1000
+sudo groupadd --system wb-tls
+sudo chown root:wb-tls tls tls/*.pem
+sudo chmod 0750 tls && sudo chmod 0440 tls/*.pem
+getent group wb-tls | cut -d: -f3
 ```
 
-Use the matching host paths if `TEMPORAL_TLS_DIR` points elsewhere. The other
-referenced PEM files must be readable by UID or GID 1000 too. Never
-`chmod 644` the private key: every local account could read it.
+Create `wb-tls` once. Put the numeric GID printed by the last command in
+`.env` as `TEMPORAL_TLS_GID=<that GID>`. Compose adds this supplementary group
+to both containers, so they can read the root-owned PEM files without giving
+the host's UID/GID 1000 account access. An empty `TEMPORAL_TLS_GID` falls back
+to the images' existing GID 1000; leave it empty only when no restricted PEM
+files are mounted.
+
+Use the matching host paths if `TEMPORAL_TLS_DIR` points elsewhere. The
+mounted directory needs group traversal and every referenced PEM file needs
+group read access. Keep the files root-owned, including after certificate
+renewal. Never `chmod 644` the private key: every local account could read it.
 
 `TEMPORAL_TLS_DIR` may point at `./tls` or at a directory outside the checkout,
 nothing else: the whole repository is the image build context, so a key

@@ -83,6 +83,8 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-}
     volumes: *temporal-tls-volumes
+    group_add:
+      - '${TEMPORAL_TLS_GID:-1000}'
     depends_on:
       app-db:
         condition: service_healthy
@@ -126,6 +128,8 @@ services:
       # optional - empty disables the AI Agent's web search tool
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     volumes: *temporal-tls-volumes
+    group_add:
+      - '${TEMPORAL_TLS_GID:-1000}'
     depends_on:
       app-db:
         condition: service_healthy
